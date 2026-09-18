@@ -1,0 +1,41 @@
+# Compose de référence pour Coolify (config avancée / "Docker Compose").
+# Points clés pour observer l'HÔTE depuis le conteneur :
+#   - network_mode: host  -> `ss` voit les connexions réelles de l'hôte
+#   - /proc monté          -> `top`, `free`, `mpstat` lisent l'état hôte
+#   - /var/run/docker.sock:ro -> `docker ps/start` des conteneurs de l'hôte
+#
+# ⚠️ Avec network_mode: host, PAS de mapping "ports:" : l'app écoute
+#    directement sur PORT (défaut 3000) de l'hôte.
+services:
+  vigile:
+    build: .
+    container_name: vigile-buyticle
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN}
+      PHONE_NUMBER_ID: ${PHONE_NUMBER_ID}
+      ADMIN_NUMBERS: ${ADMIN_NUMBERS}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
+      CRITICAL_CONTAINERS: ${CRITICAL_CONTAINERS:-}
+      STEAL_MAX: ${STEAL_MAX:-40}
+      RAM_MAX: ${RAM_MAX:-92}
+      DISK_MAX: ${DISK_MAX:-88}
+      COOLDOWN_SEC: ${COOLDOWN_SEC:-900}
+      ADMIN_ALERT_TEMPLATE: ${ADMIN_ALERT_TEMPLATE:-}
+      CLIENT_MSG_TEMPLATE: ${CLIENT_MSG_TEMPLATE:-}
+      TEMPLATE_LANG: ${TEMPLATE_LANG:-fr}
+      AUTO_CLIENT_NOTICE_MIN: ${AUTO_CLIENT_NOTICE_MIN:-0}
+      SERVER_PUBLIC_IP: ${SERVER_PUBLIC_IP:-}
+      EXTRA_ALLOWED_PREFIXES: ${EXTRA_ALLOWED_PREFIXES:-}
+    volumes:
+      - vigile-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+    # pid: host permet à `top`/`ps` de voir les process de l'hôte.
+    pid: host
+
+volumes:
+  vigile-data:
