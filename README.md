@@ -47,6 +47,35 @@ une **commande d'urgence** (ex. `docker stop $(docker ps -q)`).
   envoyé automatiquement aux clients. L'admin garde la vérité complète en
   parallèle.
 
+### 2 bis. Protection facturation (anti-rafale)
+
+Toutes les sorties WhatsApp passent par un **gouverneur** (`src/guard.js`) qui
+empêche toute rafale — donc toute explosion de facture — même si un incident
+dure des heures ou si un bug boucle :
+
+1. **Cooldown par type** (`COOLDOWN_SEC`, 15 min) : une même condition ne
+   ré-alerte pas avant expiration.
+2. **Anti-répétition (état « en cours »)** : **une** alerte au déclenchement,
+   **une** alerte « ✅ Résolu » au retour à la normale, **rien** entre les deux.
+3. **Plafond journalier** (`MAX_MSG_PER_DAY`, 30) : au-delà, l'app **arrête
+   d'envoyer** pour la journée (log seulement). Compteur remis à zéro chaque jour.
+4. **Coupe-circuit horaire** (`MAX_MSG_PER_HOUR`, 6) : si un envoi ferait
+   dépasser le seuil, l'app **suspend les envois 1 h** et n'envoie qu'**un seul**
+   message « Trop d'alertes, envois suspendus 1h — vérifie le serveur ».
+5. **Broadcasts clients** : **jamais automatiques par défaut**
+   (`AUTO_CLIENT_NOTICE_MIN=0`). Un broadcast part uniquement via
+   `POST /api/broadcast` **avec `"confirm": true`** (l'appel sans confirmation
+   renvoie le **nombre de destinataires** pour validation), et pas deux fois
+   dans `CLIENT_BROADCAST_COOLDOWN` (1 h).
+6. **Déduplication de contenu** : deux messages au texte identique dans la même
+   fenêtre de cooldown ne partent pas deux fois.
+7. **Quiet hours** (`QUIET_HOURS`, ex. `23-6`) : la nuit, les alertes **non
+   critiques** sont **regroupées** en un seul récapitulatif envoyé à la fin de la
+   plage. Le **botnet/connexions suspectes et le cron suspect restent
+   prioritaires** et alertent immédiatement.
+8. **Compteur visible** : `GET /api/status` expose `messaging` (messages envoyés
+   aujourd'hui / cette heure, plafonds, état de suspension, quiet hours).
+
 ### 3. Gestion des numéros
 
 - **ADMIN** : `ADMIN_NUMBERS` (séparés par virgule), reçoivent la vérité.
@@ -79,9 +108,12 @@ curl -H "x-admin-token: $ADMIN_API_TOKEN" http://VPS:3000/api/status
 curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"phone":"237690000000","name":"Client A"}' http://VPS:3000/api/clients
 
-# Broadcast incident
+# Broadcast incident — étape 1 : aperçu (renvoie recipientCount, n'envoie rien)
 curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"incident"}' http://VPS:3000/api/broadcast
+# Étape 2 : envoi confirmé
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"incident","confirm":true}' http://VPS:3000/api/broadcast
 
 # Message de test aux admins
 curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://VPS:3000/api/test
@@ -132,6 +164,10 @@ Voir `.env.example`. Principales :
 | `ADMIN_ALERT_TEMPLATE` / `CLIENT_MSG_TEMPLATE` | Templates de secours | vide |
 | `TEMPLATE_LANG` | Langue des templates | fr |
 | `AUTO_CLIENT_NOTICE_MIN` | Délai auto-notice clients (0 = off) | 0 |
+| `MAX_MSG_PER_DAY` | Plafond global journalier | 30 |
+| `MAX_MSG_PER_HOUR` | Coupe-circuit horaire (suspension 1h au-delà) | 6 |
+| `CLIENT_BROADCAST_COOLDOWN` | Délai min entre broadcasts clients (s) | 3600 |
+| `QUIET_HOURS` | Heures calmes, ex. `23-6` (vide = off) | vide |
 | `DATA_DIR` | Dossier persistant | /data |
 | `PORT` | Port HTTP | 3000 |
 

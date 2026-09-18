@@ -5,6 +5,7 @@ const { config, validate } = require('./src/config');
 const db = require('./src/db');
 const monitor = require('./src/monitor');
 const notifier = require('./src/notifier');
+const guard = require('./src/guard');
 const { clientTypes } = require('./src/messages');
 
 const app = express();
@@ -60,20 +61,48 @@ app.get('/api/status', (req, res) => {
       RAM_MAX: config.RAM_MAX,
       DISK_MAX: config.DISK_MAX,
     },
+    // Protection facturation : conso de messages visible.
+    messaging: guard.stats(),
   });
 });
 
 // --- Broadcast clients (rassurance) ---
 app.post('/api/broadcast', async (req, res) => {
-  const type = req.body && req.body.type;
+  const body = req.body || {};
+  const type = body.type;
   if (!type || !clientTypes().includes(type)) {
     return res
       .status(400)
       .json({ error: `type requis parmi: ${clientTypes().join(', ')}` });
   }
+
+  const recipientCount = db.listClients().length;
+
+  // Sécurité anti-facture : confirmation explicite exigée, avec aperçu du
+  // nombre de destinataires. Sans "confirm": true, on ne fait qu'informer.
+  if (body.confirm !== true) {
+    return res.status(400).json({
+      error: 'Confirmation requise',
+      needConfirm: true,
+      type,
+      recipientCount,
+      hint: 'Renvoyez la requête avec "confirm": true pour envoyer.',
+    });
+  }
+
+  // Cooldown dédié aux broadcasts clients.
+  const cd = guard.canClientBroadcast();
+  if (!cd.allowed) {
+    return res.status(429).json({
+      error: 'Broadcast client en cooldown',
+      retryAfterSec: cd.retryAfterSec,
+    });
+  }
+
   try {
     const result = await notifier.notifyClients(type);
-    res.json({ ok: true, ...result });
+    guard.recordClientBroadcast();
+    res.json({ ok: true, recipientCount, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

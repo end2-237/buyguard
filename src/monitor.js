@@ -7,6 +7,19 @@ const { exec } = require('child_process');
 const { config } = require('./config');
 const notifier = require('./notifier');
 
+// Types d'alerte considérés comme CRITIQUES (jamais mis en sourdine la nuit).
+const CRITICAL_TYPES = new Set(['connection', 'cron']);
+
+// Libellés lisibles par type (pour les messages "résolu").
+const TYPE_LABELS = {
+  connection: 'Connexions sortantes suspectes',
+  cpu_steal: 'CPU steal élevé',
+  ram: 'RAM saturée',
+  disk: 'Disque / presque plein',
+  container: 'Conteneur critique arrêté',
+  cron: 'Cron root suspect',
+};
+
 // État partagé exposé via /health et /api/status.
 const lastState = {
   ts: null,
@@ -21,9 +34,11 @@ const lastState = {
 
 // Cooldown par type d'alerte : { type: timestampMs du dernier envoi }.
 const lastAlertAt = {};
+// État "en cours" par condition (anti-répétition) : { type: {active, since, notified} }.
+const conditions = {};
 
 // Suivi d'un incident majeur persistant (pour l'auto-notice clients).
-let incidentSince = null; // timestamp ms du début d'un incident majeur
+let incidentSince = null;
 let autoClientNoticeSent = false;
 
 function sh(cmd, timeoutMs = 8000) {
@@ -40,14 +55,46 @@ function inCooldown(type) {
   return Date.now() - last < config.COOLDOWN_SEC * 1000;
 }
 
-async function fireAlert(type, alert) {
-  if (inCooldown(type)) return;
-  lastAlertAt[type] = Date.now();
-  console.log(`[monitor] ALERTE ${type}: ${alert.title} (${alert.value || ''})`);
-  try {
-    await notifier.notifyAdmins(alert);
-  } catch (e) {
-    console.error('[monitor] envoi alerte échoué:', e.message);
+// Machine à états d'une condition : UNE alerte au déclenchement, UNE "résolu"
+// au retour à la normale, rien entre les deux (anti-répétition).
+async function setCondition(type, triggered, buildAlert) {
+  const cond = conditions[type] || (conditions[type] = { active: false, notified: false });
+  const isCritical = CRITICAL_TYPES.has(type);
+
+  if (triggered) {
+    if (!cond.active) {
+      cond.active = true;
+      cond.since = Date.now();
+      if (!inCooldown(type)) {
+        lastAlertAt[type] = Date.now();
+        console.log(`[monitor] ALERTE ${type}`);
+        try {
+          const res = await notifier.notifyAdmins(buildAlert(), { isCritical });
+          cond.notified = !(res && (res.skipped || res.deferred));
+        } catch (e) {
+          console.error('[monitor] envoi alerte échoué:', e.message);
+          cond.notified = false;
+        }
+      } else {
+        cond.notified = false;
+      }
+    }
+    // Déjà active : ne rien renvoyer.
+  } else if (cond.active) {
+    cond.active = false;
+    if (cond.notified) {
+      const label = TYPE_LABELS[type] || type;
+      try {
+        await notifier.notifyAdminsText(`✅ Résolu : ${label} — retour à la normale.`, undefined, {
+          category: 'alert',
+          isCritical: false,
+          bypassDedup: true,
+        });
+      } catch (e) {
+        console.error('[monitor] envoi résolution échoué:', e.message);
+      }
+    }
+    cond.notified = false;
   }
 }
 
@@ -55,32 +102,22 @@ async function fireAlert(type, alert) {
 
 function isPrivateOrIgnored(ip) {
   if (!ip) return true;
-  // IPv6 loopback / link-local : ignoré (on se concentre sur l'IPv4 sortante).
-  if (ip.includes(':')) return true;
-  if (ip.startsWith('127.')) return true; // loopback
-  if (ip.startsWith('10.')) return true; // privé
-  if (ip.startsWith('192.168.')) return true; // privé
-  if (ip.startsWith('169.254.')) return true; // link-local
+  if (ip.includes(':')) return true; // IPv6 loopback/link-local : ignoré
+  if (ip.startsWith('127.')) return true;
+  if (ip.startsWith('10.')) return true;
+  if (ip.startsWith('192.168.')) return true;
+  if (ip.startsWith('169.254.')) return true;
   if (ip === '0.0.0.0') return true;
-  // 172.16.0.0 – 172.31.255.255
   if (ip.startsWith('172.')) {
     const second = Number(ip.split('.')[1]);
     if (second >= 16 && second <= 31) return true;
   }
-  // IP publique du serveur lui-même
   if (config.SERVER_PUBLIC_IP && ip === config.SERVER_PUBLIC_IP) return true;
-  // Plages Meta/WhatsApp
-  for (const pref of config.META_PREFIXES) {
-    if (ip.startsWith(pref)) return true;
-  }
-  // Préfixes additionnels autorisés
-  for (const pref of config.EXTRA_ALLOWED_PREFIXES) {
-    if (ip.startsWith(pref)) return true;
-  }
+  for (const pref of config.META_PREFIXES) if (ip.startsWith(pref)) return true;
+  for (const pref of config.EXTRA_ALLOWED_PREFIXES) if (ip.startsWith(pref)) return true;
   return false;
 }
 
-// Extrait "ip" et "port" d'un champ ss du type "1.2.3.4:443" ou "[::1]:22".
 function parseHostPort(field) {
   if (!field) return { ip: '', port: '' };
   const idx = field.lastIndexOf(':');
@@ -92,7 +129,6 @@ function parseHostPort(field) {
 }
 
 async function checkConnections() {
-  // ss -tupnH state established : une connexion établie par ligne.
   const { stdout, err } = await sh('ss -tupnH state established 2>/dev/null');
   if (err && !stdout) {
     lastState.errors.push('ss indisponible');
@@ -102,48 +138,37 @@ async function checkConnections() {
   for (const rawLine of stdout.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
-    // Colonnes ss : Netid Recv-Q Send-Q Local Peer Process
-    // Avec -H, pas d'en-tête. On récupère les 2 dernières adresses utiles.
     const cols = line.split(/\s+/);
     if (cols.length < 5) continue;
-    // Local address = avant-dernière avant process ; format variable selon -t.
-    // Pour "tcp 0 0 LOCAL PEER users:(...)" : cols[3]=local, cols[4]=peer.
-    const localField = cols[3];
-    const peerField = cols[4];
-    const local = parseHostPort(localField);
-    const peer = parseHostPort(peerField);
-
-    // Ignore le SSH (port 22 local ou distant).
-    if (local.port === '22' || peer.port === '22') continue;
-
+    const local = parseHostPort(cols[3]);
+    const peer = parseHostPort(cols[4]);
+    if (local.port === '22' || peer.port === '22') continue; // SSH ignoré
     if (!isPrivateOrIgnored(peer.ip)) {
-      const proc = cols.slice(5).join(' ');
       suspicious.push({
         remoteIp: peer.ip,
         remotePort: peer.port,
         localPort: local.port,
-        process: proc,
+        process: cols.slice(5).join(' '),
       });
     }
   }
   lastState.suspiciousConnections = suspicious;
 
-  if (suspicious.length > 0) {
+  await setCondition('connection', suspicious.length > 0, () => {
     const first = suspicious[0];
-    await fireAlert('connection', {
+    return {
       title: 'Connexion sortante suspecte (C2/botnet ?)',
       value: `${suspicious.length} connexion(s) hors plages légitimes`,
       detail:
         `Ex: ${first.remoteIp}:${first.remotePort} ${first.process || ''}`.trim() +
         (suspicious.length > 1 ? ` (+${suspicious.length - 1} autres)` : ''),
       command: 'ss -tupn state established ; docker stop $(docker ps -q)',
-    });
-  }
+    };
+  });
 }
 
 // ---- CPU steal ----
 async function checkCpuSteal() {
-  // Essai mpstat, sinon top.
   let steal = null;
   const mp = await sh("mpstat 1 1 2>/dev/null | awk '/Average/ {print $NF}'");
   if (!mp.err && mp.stdout.trim()) {
@@ -151,96 +176,91 @@ async function checkCpuSteal() {
     if (Number.isFinite(v)) steal = v;
   }
   if (steal === null) {
-    // top -bn1 : ligne "%Cpu(s): ... x st"
     const top = await sh("top -bn1 2>/dev/null | grep -i '%Cpu'");
     const m = top.stdout.match(/([\d.,]+)\s*st/i);
     if (m) steal = Number(m[1].replace(',', '.'));
   }
   lastState.cpuSteal = steal;
-  if (steal !== null && steal > config.STEAL_MAX) {
-    await fireAlert('cpu_steal', {
-      title: 'CPU steal élevé (voisin bruyant / VPS saturé)',
-      value: `${steal}% (seuil ${config.STEAL_MAX}%)`,
-      detail: 'Le CPU est volé par l\'hôte de virtualisation.',
-      command: 'mpstat 1 5 ; top -bn1 | head -20',
-    });
-  }
+  const triggered = steal !== null && steal > config.STEAL_MAX;
+  await setCondition('cpu_steal', triggered, () => ({
+    title: 'CPU steal élevé (voisin bruyant / VPS saturé)',
+    value: `${steal}% (seuil ${config.STEAL_MAX}%)`,
+    detail: 'Le CPU est volé par l\'hôte de virtualisation.',
+    command: 'mpstat 1 5 ; top -bn1 | head -20',
+  }));
 }
 
 // ---- RAM ----
 async function checkRam() {
-  // free -m : total/used sur la ligne Mem.
   const { stdout } = await sh("free -m 2>/dev/null | awk '/Mem:/ {print $2, $3}'");
   const parts = stdout.trim().split(/\s+/);
+  let triggered = false;
+  let pct = null;
+  let used = null;
+  let total = null;
   if (parts.length >= 2) {
-    const total = Number(parts[0]);
-    const used = Number(parts[1]);
+    total = Number(parts[0]);
+    used = Number(parts[1]);
     if (total > 0) {
-      const pct = Math.round((used / total) * 100);
+      pct = Math.round((used / total) * 100);
       lastState.ramPct = pct;
-      if (pct > config.RAM_MAX) {
-        await fireAlert('ram', {
-          title: 'RAM saturée',
-          value: `${pct}% (seuil ${config.RAM_MAX}%)`,
-          detail: `${used} Mo / ${total} Mo utilisés`,
-          command: 'free -m ; ps aux --sort=-%mem | head -10',
-        });
-      }
+      triggered = pct > config.RAM_MAX;
     }
   }
+  await setCondition('ram', triggered, () => ({
+    title: 'RAM saturée',
+    value: `${pct}% (seuil ${config.RAM_MAX}%)`,
+    detail: `${used} Mo / ${total} Mo utilisés`,
+    command: 'free -m ; ps aux --sort=-%mem | head -10',
+  }));
 }
 
 // ---- Disque / ----
 async function checkDisk() {
   const { stdout } = await sh("df -P / 2>/dev/null | awk 'NR==2 {print $5}'");
   const m = stdout.trim().match(/(\d+)%/);
+  let triggered = false;
+  let pct = null;
   if (m) {
-    const pct = Number(m[1]);
+    pct = Number(m[1]);
     lastState.diskPct = pct;
-    if (pct > config.DISK_MAX) {
-      await fireAlert('disk', {
-        title: 'Disque / presque plein',
-        value: `${pct}% (seuil ${config.DISK_MAX}%)`,
-        detail: 'Partition racine.',
-        command: 'df -h ; du -xh / 2>/dev/null | sort -rh | head -20',
-      });
-    }
+    triggered = pct > config.DISK_MAX;
   }
+  await setCondition('disk', triggered, () => ({
+    title: 'Disque / presque plein',
+    value: `${pct}% (seuil ${config.DISK_MAX}%)`,
+    detail: 'Partition racine.',
+    command: 'df -h ; du -xh / 2>/dev/null | sort -rh | head -20',
+  }));
 }
 
 // ---- Conteneurs critiques arrêtés ----
 async function checkContainers() {
   if (config.CRITICAL_CONTAINERS.length === 0) {
     lastState.stoppedCriticalContainers = [];
+    await setCondition('container', false, () => ({}));
     return;
   }
-  // Liste des conteneurs en cours (noms).
   const { stdout, err } = await sh('docker ps --format "{{.Names}}" 2>/dev/null');
   if (err && !stdout) {
     lastState.errors.push('docker indisponible');
     return;
   }
   const running = new Set(
-    stdout
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean)
+    stdout.split('\n').map((s) => s.trim()).filter(Boolean)
   );
   const stopped = config.CRITICAL_CONTAINERS.filter((name) => !running.has(name));
   lastState.stoppedCriticalContainers = stopped;
-  if (stopped.length > 0) {
-    await fireAlert('container', {
-      title: 'Conteneur critique arrêté',
-      value: stopped.join(', '),
-      detail: 'Un ou plusieurs services critiques ne tournent pas.',
-      command: `docker start ${stopped.join(' ')}`,
-    });
-  }
+  await setCondition('container', stopped.length > 0, () => ({
+    title: 'Conteneur critique arrêté',
+    value: stopped.join(', '),
+    detail: 'Un ou plusieurs services critiques ne tournent pas.',
+    command: `docker start ${stopped.join(' ')}`,
+  }));
 }
 
 // ---- Cron root suspect ----
 async function checkCron() {
-  // Lit le crontab de root et les crons système.
   const { stdout } = await sh(
     'cat /var/spool/cron/crontabs/root /etc/crontab /etc/cron.d/* 2>/dev/null'
   );
@@ -251,17 +271,14 @@ async function checkCron() {
     return suspiciousPatterns.test(line);
   });
   lastState.suspiciousCron = hit || null;
-  if (hit) {
-    await fireAlert('cron', {
-      title: 'Cron root suspect (ré-compromission ?)',
-      value: 'Motif suspect détecté',
-      detail: hit.slice(0, 200),
-      command: 'crontab -l -u root ; cat /etc/crontab /etc/cron.d/*',
-    });
-  }
+  await setCondition('cron', !!hit, () => ({
+    title: 'Cron root suspect (ré-compromission ?)',
+    value: 'Motif suspect détecté',
+    detail: (hit || '').slice(0, 200),
+    command: 'crontab -l -u root ; cat /etc/crontab /etc/cron.d/*',
+  }));
 }
 
-// Un "incident majeur" = conteneur critique arrêté OU connexion suspecte OU cron suspect.
 function isMajorIncident() {
   return (
     lastState.stoppedCriticalContainers.length > 0 ||
@@ -271,7 +288,7 @@ function isMajorIncident() {
 }
 
 async function maybeAutoClientNotice() {
-  if (config.AUTO_CLIENT_NOTICE_MIN <= 0) return; // désactivé
+  if (config.AUTO_CLIENT_NOTICE_MIN <= 0) return; // désactivé par défaut
   if (isMajorIncident()) {
     if (!incidentSince) incidentSince = Date.now();
     const elapsedMin = (Date.now() - incidentSince) / 60000;
@@ -285,7 +302,6 @@ async function maybeAutoClientNotice() {
       }
     }
   } else {
-    // Retour à la normale : reset (permet une future notice, pas d'auto "retabli").
     incidentSince = null;
     autoClientNoticeSent = false;
   }
@@ -300,6 +316,12 @@ async function runChecks() {
   await checkContainers();
   await checkCron();
   await maybeAutoClientNotice();
+  // Fin des quiet hours : envoie le récapitulatif groupé s'il y en a un.
+  try {
+    await notifier.flushDeferred();
+  } catch (e) {
+    console.error('[monitor] flush récap échoué:', e.message);
+  }
   lastState.ts = new Date().toISOString();
 }
 
@@ -308,7 +330,6 @@ let timer = null;
 function start() {
   const intervalMs = config.MONITOR_INTERVAL_SEC * 1000;
   console.log(`[monitor] démarrage, boucle toutes les ${config.MONITOR_INTERVAL_SEC}s`);
-  // Premier passage rapide puis intervalle régulier.
   runChecks().catch((e) => console.error('[monitor] erreur:', e.message));
   timer = setInterval(() => {
     runChecks().catch((e) => console.error('[monitor] erreur:', e.message));

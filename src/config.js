@@ -73,6 +73,12 @@ const config = {
   // Notice auto clients (0 = désactivé)
   AUTO_CLIENT_NOTICE_MIN: num('AUTO_CLIENT_NOTICE_MIN', 0),
 
+  // Protection facturation (anti-rafale)
+  MAX_MSG_PER_DAY: num('MAX_MSG_PER_DAY', 30),
+  MAX_MSG_PER_HOUR: num('MAX_MSG_PER_HOUR', 6),
+  CLIENT_BROADCAST_COOLDOWN: num('CLIENT_BROADCAST_COOLDOWN', 3600),
+  QUIET_HOURS: process.env.QUIET_HOURS || '', // ex. "23-6" ; vide = désactivé
+
   // Stockage persistant
   DATA_DIR: process.env.DATA_DIR || '/data',
 
