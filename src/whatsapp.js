@@ -57,22 +57,32 @@ function textPayload(to, body) {
   };
 }
 
-function buttonPayload(to, bodyText, buttons) {
+function buttonPayload(to, bodyText, buttons, opts = {}) {
+  const interactive = {
+    type: 'button',
+    // Contraintes Meta : body.text ≤ 1024.
+    body: { text: String(bodyText || '').slice(0, 1024) },
+    action: {
+      // Max 3 boutons ; reply.title ≤ 20 ; reply.id unique.
+      buttons: buttons.slice(0, 3).map((b) => ({
+        type: 'reply',
+        reply: { id: b.id, title: b.title.slice(0, 20) },
+      })),
+    },
+  };
+  // header.text ≤ 60.
+  if (opts.header) {
+    interactive.header = { type: 'text', text: String(opts.header).slice(0, 60) };
+  }
+  if (opts.footer) {
+    interactive.footer = { text: String(opts.footer).slice(0, 60) };
+  }
   return {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to,
     type: 'interactive',
-    interactive: {
-      type: 'button',
-      body: { text: bodyText },
-      action: {
-        buttons: buttons.slice(0, 3).map((b) => ({
-          type: 'reply',
-          reply: { id: b.id, title: b.title.slice(0, 20) },
-        })),
-      },
-    },
+    interactive,
   };
 }
 
@@ -103,7 +113,10 @@ function templatePayload(to, templateName, bodyParam) {
 async function sendResilient(to, opts) {
   let primary;
   if (opts.buttons && opts.buttons.length) {
-    primary = buttonPayload(to, opts.text, opts.buttons);
+    primary = buttonPayload(to, opts.text, opts.buttons, {
+      header: opts.header,
+      footer: opts.footer,
+    });
   } else {
     primary = textPayload(to, opts.text);
   }

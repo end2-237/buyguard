@@ -85,6 +85,13 @@ const config = {
   // IP publique du serveur (auto-détectée si vide)
   SERVER_PUBLIC_IP: process.env.SERVER_PUBLIC_IP || '',
 
+  // Liens utiles ajoutés (cliquables) au corps des alertes admin.
+  // NB : les Reply Buttons WhatsApp ne portent pas d'URL ; les liens sont
+  // donc placés dans le body (auto-cliquables dans WhatsApp).
+  VPS_URL: process.env.VPS_URL || 'https://vps.buyticle.com/',
+  HPANEL_URL:
+    process.env.HPANEL_URL || 'https://hpanel.hostinger.com/vps/1627518/usage',
+
   // Plages réseau à ignorer (préfixes) en plus des plages Meta/WhatsApp et privées.
   EXTRA_ALLOWED_PREFIXES: list('EXTRA_ALLOWED_PREFIXES'),
 };

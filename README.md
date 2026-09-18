@@ -29,11 +29,18 @@ Déclenche une **alerte ADMIN** (WhatsApp détaillé) quand un seuil casse, avec
 | Conteneur critique arrêté | Absent de `docker ps` | `CRITICAL_CONTAINERS` |
 | Cron root suspect | motif `pkill`, `/dev/tcp`, `curl … | sh`, etc. | — |
 
-**Plages IGNORÉES** pour la détection C2 : loopback (`127.`), privées (`10.`,
-`172.16-31.`, `192.168.`), link-local (`169.254.`), l'IP publique du serveur
-(`SERVER_PUBLIC_IP`), le port **SSH 22**, et les plages **Meta/WhatsApp**
-(`57.144.`, `31.13.`, `157.240.`, `179.60.`, `129.134.`). Ajoutez d'autres
-préfixes de confiance via `EXTRA_ALLOWED_PREFIXES`.
+**Règle de détection C2 (anti-faux-positifs)** : une connexion est marquée
+suspecte **uniquement** si elle vise une IP publique hors plages légitimes **ET**
+sur un **port distant non-standard** (≠ 443 et ≠ 80). Le C2 réel sortait sur un
+port haut (ex. `46572`) ; le trafic Meta/WhatsApp et l'agent Hostinger `monarx`
+sortent sur 443 et ne déclenchent donc rien.
+
+**Ignorés** : loopback (`127.`), privées (`10.`, `172.16-31.`, `192.168.`),
+link-local (`169.254.`), l'IP publique du serveur (`SERVER_PUBLIC_IP`), le port
+**SSH 22**, tout process contenant **`monarx`**, le préfixe **`32.189.`** (agent
+Hostinger), et les plages **Meta/WhatsApp** (`57.144.`, `31.13.`, `157.240.`,
+`179.60.`, `129.134.`). Ajoutez d'autres préfixes de confiance via
+`EXTRA_ALLOWED_PREFIXES`.
 
 Chaque alerte ADMIN indique : **quoi**, **valeur**, **IP/conteneur en cause**, et
 une **commande d'urgence** (ex. `docker stop $(docker ps -q)`).
@@ -126,8 +133,17 @@ curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://VPS:3000/api/test
 Envoi via `POST https://graph.facebook.com/v26.0/{PHONE_NUMBER_ID}/messages`,
 auth `Bearer {WHATSAPP_TOKEN}`.
 
-- Messages **libres** (`text`, `interactive`/boutons pour l'admin) : **livrés
-  seulement si le destinataire a écrit dans les dernières 24 h**.
+- Les **alertes admin** sont des messages **`interactive` de type `button`**
+  (Reply Buttons) : `header` « 🚨 ALERTE ADMIN », `body` (détail ≤ 1024),
+  `footer` « Vigile Buyticle », et 2 boutons `reply` (`etat` / `couper`).
+  > ⚠️ Les Reply Buttons WhatsApp **ne peuvent pas porter d'URL** (ils renvoient
+  > seulement un `id`). Les liens **VPS** (`VPS_URL`) et **Hostinger**
+  > (`HPANEL_URL`) sont donc ajoutés — cliquables — **dans le corps** du message.
+- Messages **libres** (`text`, `interactive`/boutons) : **livrés seulement si le
+  destinataire a écrit dans les dernières 24 h**. Hors fenêtre, Meta renvoie
+  `131047` (re-engagement) ou `131026` (undeliverable) ; l'app **retombe alors
+  automatiquement sur le TEMPLATE** `ADMIN_ALERT_TEMPLATE` (le détail passe dans
+  la variable `{{1}}` / `components[0].parameters[0]`).
 - Pour des alertes/broadcasts **fiables hors fenêtre**, l'app tente d'abord le
   message libre ; en cas de refus Meta (fenêtre fermée), elle **retombe sur un
   TEMPLATE approuvé** si vous en configurez le nom :

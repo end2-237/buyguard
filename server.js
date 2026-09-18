@@ -6,7 +6,7 @@ const db = require('./src/db');
 const monitor = require('./src/monitor');
 const notifier = require('./src/notifier');
 const guard = require('./src/guard');
-const { clientTypes } = require('./src/messages');
+const { clientTypes, adminLinksBlock } = require('./src/messages');
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -133,10 +133,10 @@ app.delete('/api/clients/:phone', (req, res) => {
 // --- Test : message avec boutons aux admins ---
 app.post('/api/test', async (req, res) => {
   try {
-    const results = await notifier.notifyAdminsText('✅ Vigile Buyticle — message de test.', [
-      { id: 'view_status', title: 'Voir état' },
-      { id: 'how_to_cut', title: 'Comment couper' },
-    ]);
+    const results = await notifier.notifyAdminsText(
+      `✅ Vigile Buyticle — message de test.\n\n${adminLinksBlock()}`,
+      notifier.ADMIN_BUTTONS
+    );
     res.json({ ok: true, results });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -157,10 +157,10 @@ async function startup() {
 
   // Message de démarrage aux admins ("Vigile actif") avec boutons.
   try {
-    await notifier.notifyAdminsText('🟢 Vigile actif — surveillance démarrée.', [
-      { id: 'view_status', title: 'Voir état' },
-      { id: 'how_to_cut', title: 'Comment couper' },
-    ]);
+    await notifier.notifyAdminsText(
+      `🟢 Vigile actif — surveillance démarrée.\n\n${adminLinksBlock()}`,
+      notifier.ADMIN_BUTTONS
+    );
   } catch (e) {
     console.error('[startup] message démarrage échoué:', e.message);
   }

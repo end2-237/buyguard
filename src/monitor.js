@@ -10,6 +10,14 @@ const notifier = require('./notifier');
 // Types d'alerte considérés comme CRITIQUES (jamais mis en sourdine la nuit).
 const CRITICAL_TYPES = new Set(['connection', 'cron']);
 
+// Préfixes IP ignorés par défaut (en plus des plages privées et Meta/WhatsApp).
+// 32.189. = agent Hostinger "monarx" (ex. 32.189.158.86).
+const DEFAULT_ALLOWED_PREFIXES = ['32.189.'];
+
+// Ports distants "standards" (HTTPS/HTTP) considérés légitimes : le C2 réel
+// sortait sur un port haut (ex. 46572), pas sur 443/80.
+const STANDARD_REMOTE_PORTS = new Set(['443', '80']);
+
 // Libellés lisibles par type (pour les messages "résolu").
 const TYPE_LABELS = {
   connection: 'Connexions sortantes suspectes',
@@ -114,6 +122,7 @@ function isPrivateOrIgnored(ip) {
   }
   if (config.SERVER_PUBLIC_IP && ip === config.SERVER_PUBLIC_IP) return true;
   for (const pref of config.META_PREFIXES) if (ip.startsWith(pref)) return true;
+  for (const pref of DEFAULT_ALLOWED_PREFIXES) if (ip.startsWith(pref)) return true;
   for (const pref of config.EXTRA_ALLOWED_PREFIXES) if (ip.startsWith(pref)) return true;
   return false;
 }
@@ -142,13 +151,20 @@ async function checkConnections() {
     if (cols.length < 5) continue;
     const local = parseHostPort(cols[3]);
     const peer = parseHostPort(cols[4]);
+    const proc = cols.slice(5).join(' ');
+
     if (local.port === '22' || peer.port === '22') continue; // SSH ignoré
+    // Agent Hostinger monarx (HTTPS légitime) : jamais suspect.
+    if (/monarx/i.test(proc)) continue;
+    // Ports distants standards (HTTPS/HTTP) : trafic légitime (Meta, monarx…).
+    if (STANDARD_REMOTE_PORTS.has(peer.port)) continue;
+
     if (!isPrivateOrIgnored(peer.ip)) {
       suspicious.push({
         remoteIp: peer.ip,
         remotePort: peer.port,
         localPort: local.port,
-        process: cols.slice(5).join(' '),
+        process: proc,
       });
     }
   }

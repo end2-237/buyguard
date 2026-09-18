@@ -8,6 +8,14 @@ const wa = require('./whatsapp');
 const guard = require('./guard');
 const { adminAlertText, clientMessage } = require('./messages');
 
+// Boutons de réponse standard pour l'admin (reply.id unique, title ≤ 20).
+const ADMIN_BUTTONS = [
+  { id: 'etat', title: 'Voir etat' },
+  { id: 'couper', title: 'Comment couper' },
+];
+const ADMIN_HEADER = '🚨 ALERTE ADMIN';
+const ADMIN_FOOTER = 'Vigile Buyticle';
+
 function maskPhone(p) {
   if (!p || p.length < 4) return '****';
   return p.slice(0, 3) + '****' + p.slice(-2);
@@ -66,18 +74,17 @@ async function dispatch(recipients, buildOpts, meta) {
   return { results };
 }
 
-// Alerte détaillée aux admins (avec boutons).
+// Alerte détaillée aux admins : message interactif à boutons de réponse,
+// avec repli sur un TEMPLATE approuvé hors fenêtre 24h (codes 131047/131026).
 async function notifyAdmins(alert, opts = {}) {
   const text = adminAlertText(alert);
-  const buttons = [
-    { id: 'view_status', title: 'Voir état' },
-    { id: 'how_to_cut', title: 'Comment couper' },
-  ];
   return dispatch(
     config.ADMIN_NUMBERS,
     () => ({
       text,
-      buttons,
+      buttons: ADMIN_BUTTONS,
+      header: ADMIN_HEADER,
+      footer: ADMIN_FOOTER,
       fallbackTemplate: config.ADMIN_ALERT_TEMPLATE,
       fallbackParam: `${alert.title} — ${alert.value || ''}`.trim(),
     }),
@@ -85,13 +92,15 @@ async function notifyAdmins(alert, opts = {}) {
   );
 }
 
-// Message texte aux admins (démarrage, test, résolutions, récap).
+// Message aux admins avec boutons (démarrage, test, résolutions, récap).
 async function notifyAdminsText(text, buttons, opts = {}) {
   return dispatch(
     config.ADMIN_NUMBERS,
     () => ({
       text,
       buttons,
+      header: buttons ? ADMIN_HEADER : undefined,
+      footer: buttons ? ADMIN_FOOTER : undefined,
       fallbackTemplate: config.ADMIN_ALERT_TEMPLATE,
       fallbackParam: text,
     }),
@@ -139,4 +148,5 @@ module.exports = {
   notifyClients,
   flushDeferred,
   maskPhone,
+  ADMIN_BUTTONS,
 };

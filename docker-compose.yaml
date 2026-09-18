@@ -34,6 +34,8 @@ services:
       QUIET_HOURS: ${QUIET_HOURS:-}
       SERVER_PUBLIC_IP: ${SERVER_PUBLIC_IP:-}
       EXTRA_ALLOWED_PREFIXES: ${EXTRA_ALLOWED_PREFIXES:-}
+      VPS_URL: ${VPS_URL:-https://vps.buyticle.com/}
+      HPANEL_URL: ${HPANEL_URL:-https://hpanel.hostinger.com/vps/1627518/usage}
     volumes:
       - vigile-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro

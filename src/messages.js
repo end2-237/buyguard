@@ -1,5 +1,7 @@
 'use strict';
 
+const { config } = require('./config');
+
 // Messages clients pré-rédigés (rassurants, sans technique).
 const CLIENT_MESSAGES = {
   incident:
@@ -23,8 +25,9 @@ function clientTypes() {
 
 // Construit le texte d'alerte ADMIN détaillé (la VÉRITÉ technique).
 function adminAlertText(alert) {
+  // Le bandeau "🚨 ALERTE ADMIN" est porté par le header du message interactif ;
+  // ce texte alimente le body (≤ 1024).
   const lines = [];
-  lines.push('🚨 VIGILE BUYTICLE — ALERTE ADMIN');
   lines.push(`Type : ${alert.title}`);
   if (alert.value !== undefined && alert.value !== null && alert.value !== '') {
     lines.push(`Valeur : ${alert.value}`);
@@ -36,8 +39,25 @@ function adminAlertText(alert) {
     lines.push(alert.command);
   }
   lines.push('');
+  if (config.VPS_URL) lines.push(`🖥️ VPS : ${config.VPS_URL}`);
+  if (config.HPANEL_URL) lines.push(`📊 Hostinger : ${config.HPANEL_URL}`);
   lines.push(`Heure : ${new Date().toISOString()}`);
-  return lines.join('\n');
+  // body.text ≤ 1024 (contrainte Meta).
+  return lines.join('\n').slice(0, 1024);
 }
 
-module.exports = { CLIENT_MESSAGES, clientMessage, clientTypes, adminAlertText };
+// Bloc de liens utiles (VPS / Hostinger) à ajouter au corps des messages admin.
+function adminLinksBlock() {
+  const parts = [];
+  if (config.VPS_URL) parts.push(`🖥️ VPS : ${config.VPS_URL}`);
+  if (config.HPANEL_URL) parts.push(`📊 Hostinger : ${config.HPANEL_URL}`);
+  return parts.join('\n');
+}
+
+module.exports = {
+  CLIENT_MESSAGES,
+  clientMessage,
+  clientTypes,
+  adminAlertText,
+  adminLinksBlock,
+};
