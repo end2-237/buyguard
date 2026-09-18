@@ -7,7 +7,7 @@ Mini-application Node.js (Express, 100% JavaScript) qui **surveille un VPS** et
 - **CLIENTS** : reçoivent uniquement des **messages rassurants** (maintenance /
   incident), sans aucun détail technique.
 
-Déployable sur **Coolify** via `Dockerfile` / `docker-compose.yml`. Stockage
+Déployable sur **Coolify** via `Dockerfile` / `docker-compose.yaml`. Stockage
 clients dans un **volume persistant** (`/data/store.json`, pas de dépendance
 native). Seule dépendance : `express`.
 
@@ -184,7 +184,7 @@ Voir `.env.example`. Principales :
 ## Déploiement Coolify
 
 L'app doit **observer l'hôte** depuis le conteneur. Dans Coolify, utilisez la
-configuration avancée / **Docker Compose** (`docker-compose.yml` fourni) qui
+configuration avancée / **Docker Compose** (`docker-compose.yaml` fourni) qui
 active :
 
 - `network_mode: host` → `ss` voit les connexions réelles de l'hôte (pas de
@@ -197,7 +197,7 @@ active :
 
 1. Renseignez les variables (onglet **Environment** de Coolify) à partir de
    `.env.example`.
-2. Déployez via le `docker-compose.yml` (ou Dockerfile + montages équivalents
+2. Déployez via le `docker-compose.yaml` (ou Dockerfile + montages équivalents
    dans la config avancée).
 3. Vérifiez `GET /health`, puis `POST /api/test`.
 4. Ajoutez vos clients via `POST /api/clients`.
